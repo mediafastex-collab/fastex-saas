@@ -2,7 +2,7 @@
 
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -37,7 +37,11 @@ export function getFirebaseAuth() {
 
 export function getFirebaseDb() {
   const app = getFirebaseApp();
-  return app ? getFirestore(app) : null;
+  return app
+    ? initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true,
+      })
+    : null;
 }
 
 export function getFirebaseStorage() {
