@@ -1,0 +1,270 @@
+"use client";
+
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import type { User } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { getFirebaseAuth, getFirebaseDb, isFirebaseConfigured } from "@/lib/firebase/client";
+import { settings as seedSettings } from "@/lib/data/seed";
+
+export type AppUserRole = "main_admin" | "agency" | "team_member";
+
+export type UserProfile = {
+  uid: string;
+  name: string;
+  company: string;
+  email: string;
+  mobile: string;
+  role: AppUserRole;
+  status: "Pending" | "Approved" | "Rejected";
+  workspaceId: string;
+};
+
+type LoginInput = {
+  email: string;
+  password: string;
+};
+
+type SignupInput = {
+  name: string;
+  company: string;
+  email: string;
+  mobile: string;
+  password: string;
+};
+
+type AuthContextValue = {
+  firebaseEnabled: boolean;
+  loading: boolean;
+  busy: boolean;
+  user: User | null;
+  profile: UserProfile | null;
+  login: (input: LoginInput) => Promise<{ ok: boolean; target?: "/admin" | "/workspace"; error?: string }>;
+  signup: (input: SignupInput) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  resetPassword: (email: string) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  logout: () => Promise<void>;
+};
+
+const AuthCtx = createContext<AuthContextValue | null>(null);
+
+const MAIN_ADMIN_EMAIL = "aagam@fastexmedia.com";
+
+async function readProfile(uid: string) {
+  const db = getFirebaseDb();
+  if (!db) return null;
+  const snapshot = await getDoc(doc(db, "users", uid));
+  if (!snapshot.exists()) return null;
+  return { uid, ...(snapshot.data() as Omit<UserProfile, "uid">) } as UserProfile;
+}
+
+function createEmptyWorkspace(company?: string) {
+  return {
+    clients: [],
+    services: [],
+    packages: [],
+    teamMembers: [],
+    credentials: [],
+    invoices: [],
+    quotations: [],
+    payments: [],
+    tasks: [],
+    checklists: [],
+    leads: [],
+    settings: {
+      ...seedSettings,
+      companyName: company || seedSettings.companyName,
+    },
+  };
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const firebaseEnabled = isFirebaseConfigured();
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    if (!firebaseEnabled) {
+      setLoading(false);
+      return;
+    }
+
+    const auth = getFirebaseAuth();
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
+      setUser(nextUser);
+      if (!nextUser) {
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const nextProfile = await readProfile(nextUser.uid);
+        setProfile(nextProfile);
+      } catch {
+        setProfile(null);
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [firebaseEnabled]);
+
+  async function login(input: LoginInput) {
+    if (!firebaseEnabled) {
+      return { ok: false, error: "Firebase is not configured yet in this app." };
+    }
+
+    const auth = getFirebaseAuth();
+    if (!auth) {
+      return { ok: false, error: "Firebase auth is unavailable." };
+    }
+
+    setBusy(true);
+    try {
+      const credential = await signInWithEmailAndPassword(auth, input.email.trim(), input.password);
+      const nextProfile = await readProfile(credential.user.uid);
+
+      if (!nextProfile) {
+        await signOut(auth);
+        return { ok: false, error: "Account profile is missing in Firestore. Create the users record first." };
+      }
+
+      if (nextProfile.status !== "Approved" && nextProfile.role !== "main_admin") {
+        await signOut(auth);
+        return { ok: false, error: "Your account is waiting for approval from Fastex Media." };
+      }
+
+      setProfile(nextProfile);
+      return {
+        ok: true,
+        target: (nextProfile.role === "main_admin" ? "/admin" : "/workspace") as "/admin" | "/workspace",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to log in.";
+      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signup(input: SignupInput) {
+    if (!firebaseEnabled) {
+      return { ok: false, error: "Firebase is not configured yet in this app." };
+    }
+
+    const auth = getFirebaseAuth();
+    const db = getFirebaseDb();
+    if (!auth || !db) {
+      return { ok: false, error: "Firebase services are unavailable." };
+    }
+
+    setBusy(true);
+    try {
+      const credential = await createUserWithEmailAndPassword(
+        auth,
+        input.email.trim(),
+        input.password
+      );
+
+      const role: AppUserRole = input.email.trim().toLowerCase() === MAIN_ADMIN_EMAIL ? "main_admin" : "agency";
+      const status: UserProfile["status"] = role === "main_admin" ? "Approved" : "Pending";
+      const workspaceId = credential.user.uid;
+
+      await setDoc(doc(db, "users", credential.user.uid), {
+        name: input.name.trim(),
+        company: input.company.trim() || "Fastex Workspace",
+        email: input.email.trim(),
+        mobile: input.mobile.trim(),
+        role,
+        status,
+        workspaceId,
+        createdAt: serverTimestamp(),
+        approvedAt: status === "Approved" ? serverTimestamp() : null,
+      });
+
+      await setDoc(doc(db, "workspaces", workspaceId), {
+        workspaceId,
+        ownerUid: credential.user.uid,
+        company: input.company.trim() || "Fastex Workspace",
+        data: createEmptyWorkspace(input.company.trim() || "Fastex Workspace"),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      await signOut(auth);
+
+      return {
+        ok: true,
+        message: status === "Approved"
+          ? "Account created. You can log in now."
+          : "Signup submitted. Once approved from Customer Master, you can log in.",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create the account.";
+      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetPassword(email: string) {
+    if (!firebaseEnabled) {
+      return { ok: false, error: "Firebase is not configured yet in this app." };
+    }
+
+    const auth = getFirebaseAuth();
+    if (!auth) {
+      return { ok: false, error: "Firebase auth is unavailable." };
+    }
+
+    setBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      return { ok: true, message: "Password reset email sent." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to send reset email.";
+      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logout() {
+    const auth = getFirebaseAuth();
+    if (!auth) return;
+    await signOut(auth);
+  }
+
+  const value = useMemo<AuthContextValue>(() => ({
+    firebaseEnabled,
+    loading,
+    busy,
+    user,
+    profile,
+    login,
+    signup,
+    resetPassword,
+    logout,
+  }), [firebaseEnabled, loading, busy, user, profile]);
+
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthCtx);
+  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
+  return ctx;
+}
