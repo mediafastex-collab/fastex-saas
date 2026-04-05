@@ -39,7 +39,7 @@ export function getFirebaseDb() {
   const app = getFirebaseApp();
   return app
     ? initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true,
+        experimentalForceLongPolling: true,
       })
     : null;
 }
