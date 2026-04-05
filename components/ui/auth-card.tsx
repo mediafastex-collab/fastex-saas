@@ -91,6 +91,9 @@ export function AuthCard() {
 
       {error ? <div className="auth-message error">{error}</div> : null}
       {notice ? <div className="auth-message success">{notice}</div> : null}
+      <div className="auth-debug">
+        Host: {typeof window !== "undefined" ? window.location.host : "server"} · Online: {typeof navigator !== "undefined" ? String(navigator.onLine) : "unknown"} · Firebase: {String(firebaseEnabled)}
+      </div>
 
       <form className="stack" style={{ marginTop: 20 }} onSubmit={handleSubmit}>
         {mode === "signup" ? (

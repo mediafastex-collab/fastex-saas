@@ -63,6 +63,17 @@ async function readProfile(uid: string) {
   return { uid, ...(snapshot.data() as Omit<UserProfile, "uid">) } as UserProfile;
 }
 
+function formatFirebaseError(error: unknown, stage: string) {
+  if (typeof error === "object" && error !== null) {
+    const maybeError = error as { code?: string; message?: string };
+    const parts = [stage];
+    if (maybeError.code) parts.push(`code=${maybeError.code}`);
+    if (maybeError.message) parts.push(`message=${maybeError.message.replace(/^Firebase:\s*/i, "")}`);
+    return parts.join(" | ");
+  }
+  return `${stage} | message=Unknown Firebase error`;
+}
+
 function createEmptyWorkspace(company?: string) {
   return {
     clients: [],
@@ -113,7 +124,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const nextProfile = await readProfile(nextUser.uid);
         setProfile(nextProfile);
-      } catch {
+      } catch (error) {
+        console.error("Auth state profile read failed", error);
         setProfile(null);
       } finally {
         setLoading(false);
@@ -154,8 +166,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         target: (nextProfile.role === "main_admin" ? "/admin" : "/workspace") as "/admin" | "/workspace",
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to log in.";
-      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+      console.error("Login failed", error);
+      return { ok: false, error: formatFirebaseError(error, "login_or_profile_read_failed") };
     } finally {
       setBusy(false);
     }
@@ -213,8 +225,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           : "Signup submitted. Once approved from Customer Master, you can log in.",
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to create the account.";
-      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+      console.error("Signup failed", error);
+      return { ok: false, error: formatFirebaseError(error, "signup_failed") };
     } finally {
       setBusy(false);
     }
@@ -235,8 +247,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await sendPasswordResetEmail(auth, email.trim());
       return { ok: true, message: "Password reset email sent." };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to send reset email.";
-      return { ok: false, error: message.replace(/^Firebase:\s*/i, "") };
+      console.error("Password reset failed", error);
+      return { ok: false, error: formatFirebaseError(error, "password_reset_failed") };
     } finally {
       setBusy(false);
     }

@@ -688,6 +688,12 @@ h1, h2, h3, h4, h5, h6 { line-height: 1.25; }
   border-color: var(--warning-line);
 }
 
+.auth-debug {
+  margin-top: 12px;
+  font-size: 0.73rem;
+  color: var(--text-xsoft);
+}
+
 .stack {
   display: flex;
   flex-direction: column;
