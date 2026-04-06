@@ -9,7 +9,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, getDocFromServer, serverTimestamp, setDoc } from "firebase/firestore";
 import { getFirebaseAuth, getFirebaseDb, isFirebaseConfigured } from "@/lib/firebase/client";
 import { settings as seedSettings } from "@/lib/data/seed";
 
@@ -58,7 +58,7 @@ const MAIN_ADMIN_EMAIL = "aagam@fastexmedia.com";
 async function readProfile(uid: string) {
   const db = getFirebaseDb();
   if (!db) return null;
-  const snapshot = await getDoc(doc(db, "users", uid));
+  const snapshot = await getDocFromServer(doc(db, "users", uid));
   if (!snapshot.exists()) return null;
   return { uid, ...(snapshot.data() as Omit<UserProfile, "uid">) } as UserProfile;
 }
@@ -148,6 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBusy(true);
     try {
       const credential = await signInWithEmailAndPassword(auth, input.email.trim(), input.password);
+      await credential.user.getIdToken();
       const nextProfile = await readProfile(credential.user.uid);
 
       if (!nextProfile) {
