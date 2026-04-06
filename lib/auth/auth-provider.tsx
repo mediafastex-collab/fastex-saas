@@ -10,7 +10,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { doc, getDocFromServer, serverTimestamp, setDoc } from "firebase/firestore";
-import { getFirebaseAuth, getFirebaseDb, isFirebaseConfigured } from "@/lib/firebase/client";
+import { getFirebaseAuth, getFirebaseDb, getFirebaseProjectId, isFirebaseConfigured } from "@/lib/firebase/client";
 import { settings as seedSettings } from "@/lib/data/seed";
 
 export type AppUserRole = "main_admin" | "agency" | "team_member";
@@ -55,12 +55,67 @@ const AuthCtx = createContext<AuthContextValue | null>(null);
 
 const MAIN_ADMIN_EMAIL = "aagam@fastexmedia.com";
 
-async function readProfile(uid: string) {
+function parseFirestoreValue(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const typed = value as Record<string, unknown>;
+  if ("stringValue" in typed) return typed.stringValue;
+  if ("integerValue" in typed) return Number(typed.integerValue);
+  if ("doubleValue" in typed) return Number(typed.doubleValue);
+  if ("booleanValue" in typed) return Boolean(typed.booleanValue);
+  if ("nullValue" in typed) return null;
+  if ("timestampValue" in typed) return typed.timestampValue;
+  if ("mapValue" in typed) {
+    const fields = ((typed.mapValue as { fields?: Record<string, unknown> })?.fields) ?? {};
+    return Object.fromEntries(
+      Object.entries(fields).map(([key, inner]) => [key, parseFirestoreValue(inner)])
+    );
+  }
+  if ("arrayValue" in typed) {
+    const values = ((typed.arrayValue as { values?: unknown[] })?.values) ?? [];
+    return values.map((item) => parseFirestoreValue(item));
+  }
+  return value;
+}
+
+async function readProfileViaRest(uid: string, idToken: string) {
+  const projectId = getFirebaseProjectId();
+  if (!projectId) return null;
+
+  const response = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${uid}`,
+    {
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+      cache: "no-store",
+    }
+  );
+
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Firestore REST profile read failed: ${response.status} ${text}`);
+  }
+
+  const payload = (await response.json()) as { fields?: Record<string, unknown> };
+  const fields = payload.fields ?? {};
+  return { uid, ...(parseFirestoreValue({ mapValue: { fields } }) as Omit<UserProfile, "uid">) } as UserProfile;
+}
+
+async function readProfile(uid: string, idToken?: string) {
   const db = getFirebaseDb();
-  if (!db) return null;
-  const snapshot = await getDocFromServer(doc(db, "users", uid));
-  if (!snapshot.exists()) return null;
-  return { uid, ...(snapshot.data() as Omit<UserProfile, "uid">) } as UserProfile;
+  try {
+    if (!db) throw new Error("Firestore SDK unavailable");
+    const snapshot = await getDocFromServer(doc(db, "users", uid));
+    if (!snapshot.exists()) return null;
+    return { uid, ...(snapshot.data() as Omit<UserProfile, "uid">) } as UserProfile;
+  } catch (error) {
+    const maybeError = error as { code?: string };
+    if (idToken && maybeError?.code === "unavailable") {
+      return readProfileViaRest(uid, idToken);
+    }
+    throw error;
+  }
 }
 
 function formatFirebaseError(error: unknown, stage: string) {
@@ -122,7 +177,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const nextProfile = await readProfile(nextUser.uid);
+        const token = await nextUser.getIdToken();
+        const nextProfile = await readProfile(nextUser.uid, token);
         setProfile(nextProfile);
       } catch (error) {
         console.error("Auth state profile read failed", error);
@@ -148,8 +204,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBusy(true);
     try {
       const credential = await signInWithEmailAndPassword(auth, input.email.trim(), input.password);
-      await credential.user.getIdToken();
-      const nextProfile = await readProfile(credential.user.uid);
+      const token = await credential.user.getIdToken();
+      const nextProfile = await readProfile(credential.user.uid, token);
 
       if (!nextProfile) {
         await signOut(auth);

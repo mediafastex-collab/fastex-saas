@@ -14,6 +14,10 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
+export function getFirebaseProjectId() {
+  return firebaseConfig.projectId || null;
+}
+
 let firebaseAppSingleton: ReturnType<typeof initializeApp> | null = null;
 let firebaseAuthSingleton: Auth | null = null;
 let firebaseDbSingleton: Firestore | null = null;
