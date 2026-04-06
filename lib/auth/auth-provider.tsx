@@ -208,24 +208,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBusy(true);
     try {
       const credential = await signInWithEmailAndPassword(auth, input.email.trim(), input.password);
-      const token = await credential.user.getIdToken();
-      const nextProfile = await readProfile(credential.user.uid, token);
-      resolvedProfileCache.set(credential.user.uid, nextProfile);
-
-      if (!nextProfile) {
-        await signOut(auth);
-        return { ok: false, error: "Account profile is missing in Firestore. Create the users record first." };
-      }
-
-      if (nextProfile.status !== "Approved" && nextProfile.role !== "main_admin") {
-        await signOut(auth);
-        return { ok: false, error: "Your account is waiting for approval from Fastex Media." };
-      }
-
-      setProfile(nextProfile);
       return {
         ok: true,
-        target: (nextProfile.role === "main_admin" ? "/admin" : "/workspace") as "/admin" | "/workspace",
+        target: (credential.user.email?.trim().toLowerCase() === MAIN_ADMIN_EMAIL ? "/admin" : "/workspace") as "/admin" | "/workspace",
       };
     } catch (error) {
       console.error("Login failed", error);

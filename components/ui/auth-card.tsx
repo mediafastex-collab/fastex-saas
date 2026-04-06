@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-provider";
 
@@ -26,6 +26,11 @@ export function AuthCard() {
     return "Sign in to Fastex Admin";
   }, [mode]);
 
+  useEffect(() => {
+    router.prefetch("/admin");
+    router.prefetch("/workspace");
+  }, [router]);
+
   function patch(key: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -41,7 +46,7 @@ export function AuthCard() {
         setError(result.error || "Unable to log in.");
         return;
       }
-      router.push(result.target || "/workspace");
+      router.replace(result.target || "/workspace");
       return;
     }
 
