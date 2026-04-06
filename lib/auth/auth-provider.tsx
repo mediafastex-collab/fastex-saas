@@ -55,6 +55,29 @@ const AuthCtx = createContext<AuthContextValue | null>(null);
 
 const MAIN_ADMIN_EMAIL = "aagam@fastexmedia.com";
 const resolvedProfileCache = new Map<string, UserProfile | null>();
+const PROFILE_CACHE_KEY = "fastex_auth_profile";
+
+function cacheProfile(profile: UserProfile | null) {
+  if (typeof window === "undefined") return;
+  if (!profile) {
+    window.sessionStorage.removeItem(PROFILE_CACHE_KEY);
+    return;
+  }
+  window.sessionStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+}
+
+function readCachedProfile(uid?: string | null) {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserProfile;
+    if (uid && parsed.uid !== uid) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 function parseFirestoreValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
@@ -76,6 +99,31 @@ function parseFirestoreValue(value: unknown): unknown {
     return values.map((item) => parseFirestoreValue(item));
   }
   return value;
+}
+
+function toFirestoreValue(value: unknown): Record<string, unknown> {
+  if (value === null || value === undefined) return { nullValue: null };
+  if (typeof value === "string") return { stringValue: value };
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
+  }
+  if (Array.isArray(value)) {
+    return { arrayValue: { values: value.map((item) => toFirestoreValue(item)) } };
+  }
+  if (value instanceof Date) {
+    return { timestampValue: value.toISOString() };
+  }
+  if (typeof value === "object") {
+    return {
+      mapValue: {
+        fields: Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([key, inner]) => [key, toFirestoreValue(inner)])
+        ),
+      },
+    };
+  }
+  return { stringValue: String(value) };
 }
 
 async function readProfileViaRest(uid: string, idToken: string) {
@@ -101,6 +149,34 @@ async function readProfileViaRest(uid: string, idToken: string) {
   const payload = (await response.json()) as { fields?: Record<string, unknown> };
   const fields = payload.fields ?? {};
   return { uid, ...(parseFirestoreValue({ mapValue: { fields } }) as Omit<UserProfile, "uid">) } as UserProfile;
+}
+
+async function writeDocumentViaRest(path: string, data: Record<string, unknown>, idToken: string) {
+  const projectId = getFirebaseProjectId();
+  if (!projectId) {
+    throw new Error("Firebase project ID is missing.");
+  }
+
+  const response = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${path}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fields: Object.fromEntries(
+          Object.entries(data).map(([key, value]) => [key, toFirestoreValue(value)])
+        ),
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Firestore REST write failed: ${response.status} ${text}`);
+  }
 }
 
 async function readProfile(uid: string, idToken?: string) {
@@ -173,6 +249,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(nextUser);
       if (!nextUser) {
         resolvedProfileCache.clear();
+        cacheProfile(null);
         setProfile(null);
         setLoading(false);
         return;
@@ -180,9 +257,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const cachedProfile = resolvedProfileCache.get(nextUser.uid);
-        const nextProfile = cachedProfile !== undefined
-          ? cachedProfile
-          : await readProfile(nextUser.uid, await nextUser.getIdToken());
+        const sessionProfile = cachedProfile !== undefined ? cachedProfile : readCachedProfile(nextUser.uid);
+
+        if (sessionProfile) {
+          setProfile(sessionProfile);
+          setLoading(false);
+        }
+
+        const nextProfile = sessionProfile ?? await readProfile(nextUser.uid, await nextUser.getIdToken());
+        resolvedProfileCache.set(nextUser.uid, nextProfile);
+        cacheProfile(nextProfile);
         setProfile(nextProfile);
       } catch (error) {
         console.error("Auth state profile read failed", error);
@@ -243,25 +327,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const status: UserProfile["status"] = role === "main_admin" ? "Approved" : "Pending";
       const workspaceId = credential.user.uid;
 
-      await setDoc(doc(db, "users", credential.user.uid), {
+      const companyName = input.company.trim() || "Fastex Workspace";
+      const userDoc = {
         name: input.name.trim(),
-        company: input.company.trim() || "Fastex Workspace",
+        company: companyName,
         email: input.email.trim(),
         mobile: input.mobile.trim(),
         role,
         status,
         workspaceId,
-        createdAt: serverTimestamp(),
-        approvedAt: status === "Approved" ? serverTimestamp() : null,
-      });
-
-      await setDoc(doc(db, "workspaces", workspaceId), {
+        createdAt: new Date(),
+        approvedAt: status === "Approved" ? new Date() : null,
+      };
+      const workspaceDoc = {
         workspaceId,
         ownerUid: credential.user.uid,
-        company: input.company.trim() || "Fastex Workspace",
-        data: createEmptyWorkspace(input.company.trim() || "Fastex Workspace"),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+        company: companyName,
+        data: createEmptyWorkspace(companyName),
+        updatedAt: new Date(),
+      };
+
+      const idToken = await credential.user.getIdToken();
+
+      try {
+        await setDoc(doc(db, "users", credential.user.uid), {
+          ...userDoc,
+          createdAt: serverTimestamp(),
+          approvedAt: status === "Approved" ? serverTimestamp() : null,
+        });
+
+        await setDoc(doc(db, "workspaces", workspaceId), {
+          ...workspaceDoc,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      } catch (error) {
+        const maybeError = error as { code?: string };
+        if (maybeError?.code !== "unavailable") {
+          throw error;
+        }
+
+        await writeDocumentViaRest(`users/${credential.user.uid}`, userDoc, idToken);
+        await writeDocumentViaRest(`workspaces/${workspaceId}`, workspaceDoc, idToken);
+      }
 
       await signOut(auth);
 
@@ -307,6 +414,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (auth.currentUser?.uid) {
       resolvedProfileCache.delete(auth.currentUser.uid);
     }
+    cacheProfile(null);
     await signOut(auth);
   }
 
