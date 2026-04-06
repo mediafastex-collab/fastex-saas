@@ -1,9 +1,9 @@
 "use client";
 
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { initializeFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { Auth, getAuth } from "firebase/auth";
+import { Firestore, initializeFirestore } from "firebase/firestore";
+import { FirebaseStorage, getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -13,6 +13,11 @@ const firebaseConfig = {
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
+
+let firebaseAppSingleton: ReturnType<typeof initializeApp> | null = null;
+let firebaseAuthSingleton: Auth | null = null;
+let firebaseDbSingleton: Firestore | null = null;
+let firebaseStorageSingleton: FirebaseStorage | null = null;
 
 export function isFirebaseConfigured() {
   return Boolean(
@@ -27,24 +32,33 @@ export function isFirebaseConfigured() {
 
 export function getFirebaseApp() {
   if (!isFirebaseConfigured()) return null;
-  return getApps().length ? getApp() : initializeApp(firebaseConfig);
+  if (firebaseAppSingleton) return firebaseAppSingleton;
+  firebaseAppSingleton = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  return firebaseAppSingleton;
 }
 
 export function getFirebaseAuth() {
   const app = getFirebaseApp();
-  return app ? getAuth(app) : null;
+  if (!app) return null;
+  if (firebaseAuthSingleton) return firebaseAuthSingleton;
+  firebaseAuthSingleton = getAuth(app);
+  return firebaseAuthSingleton;
 }
 
 export function getFirebaseDb() {
   const app = getFirebaseApp();
-  return app
-    ? initializeFirestore(app, {
-        experimentalForceLongPolling: true,
-      })
-    : null;
+  if (!app) return null;
+  if (firebaseDbSingleton) return firebaseDbSingleton;
+  firebaseDbSingleton = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+  });
+  return firebaseDbSingleton;
 }
 
 export function getFirebaseStorage() {
   const app = getFirebaseApp();
-  return app ? getStorage(app) : null;
+  if (!app) return null;
+  if (firebaseStorageSingleton) return firebaseStorageSingleton;
+  firebaseStorageSingleton = getStorage(app);
+  return firebaseStorageSingleton;
 }
