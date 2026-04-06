@@ -54,6 +54,7 @@ type AuthContextValue = {
 const AuthCtx = createContext<AuthContextValue | null>(null);
 
 const MAIN_ADMIN_EMAIL = "aagam@fastexmedia.com";
+const resolvedProfileCache = new Map<string, UserProfile | null>();
 
 function parseFirestoreValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
@@ -171,14 +172,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
       setUser(nextUser);
       if (!nextUser) {
+        resolvedProfileCache.clear();
         setProfile(null);
         setLoading(false);
         return;
       }
 
       try {
-        const token = await nextUser.getIdToken();
-        const nextProfile = await readProfile(nextUser.uid, token);
+        const cachedProfile = resolvedProfileCache.get(nextUser.uid);
+        const nextProfile = cachedProfile !== undefined
+          ? cachedProfile
+          : await readProfile(nextUser.uid, await nextUser.getIdToken());
         setProfile(nextProfile);
       } catch (error) {
         console.error("Auth state profile read failed", error);
@@ -206,6 +210,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const credential = await signInWithEmailAndPassword(auth, input.email.trim(), input.password);
       const token = await credential.user.getIdToken();
       const nextProfile = await readProfile(credential.user.uid, token);
+      resolvedProfileCache.set(credential.user.uid, nextProfile);
 
       if (!nextProfile) {
         await signOut(auth);
@@ -314,6 +319,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function logout() {
     const auth = getFirebaseAuth();
     if (!auth) return;
+    if (auth.currentUser?.uid) {
+      resolvedProfileCache.delete(auth.currentUser.uid);
+    }
     await signOut(auth);
   }
 
